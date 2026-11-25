@@ -74,3 +74,103 @@ func setJDKDir(_ path: String?, _ url: URL = flutterSettings) throws {
     try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try JSONSerialization.data(withJSONObject: s, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
 }
+
+// MARK: - Everything else that picks a JDK: Gradle CLI, GUI apps (Android Studio, VS Code), VS Code's Java extension.
+
+let gradleProps = URL(fileURLWithPath: homeDir + "/.gradle/gradle.properties")
+/// VS Code and its forks. Only ones that are installed (User dir exists) get touched.
+let vscodeSettings = ["Code", "Code - Insiders", "Cursor", "VSCodium", "Windsurf"]
+    .map { URL(fileURLWithPath: homeDir + "/Library/Application Support/\($0)/User/settings.json") }
+
+/// Removes every non-commented line matching `pattern`, then inserts `line` (if any) via `insert`.
+/// Plain text edit so comments and formatting in the user's file survive.
+func editLines(_ url: URL, _ pattern: String, _ line: String?, insert: (String, String) -> String) throws {
+    let old = fm.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
+    let re = try NSRegularExpression(pattern: pattern, options: .anchorsMatchLines)
+    var s = re.stringByReplacingMatches(in: old, range: NSRange(old.startIndex..., in: old), withTemplate: "")
+    if let line { s = insert(s, line) }
+    if s == old { return }
+    try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try s.write(to: url, atomically: true, encoding: .utf8)
+}
+
+/// Sets (or with nil removes) one `key=value` line in a .properties file.
+func setProperty(_ key: String, _ value: String?, _ url: URL) throws {
+    try editLines(url, "^[ \\t]*" + NSRegularExpression.escapedPattern(for: key) + "[ \\t]*[=:].*\\n?",
+                  value.map { key + "=" + $0.replacingOccurrences(of: "\\", with: "\\\\") }) { s, l in
+        (s.isEmpty || s.hasSuffix("\n") ? s : s + "\n") + l + "\n"
+    }
+}
+
+/// `org.gradle.java.home` beats JAVA_HOME for every `./gradlew` run on this Mac, effective immediately.
+func setGradleJavaHome(_ path: String?, _ url: URL = gradleProps) throws {
+    try setProperty("org.gradle.java.home", path, url)
+}
+
+/// VS Code settings are JSONC (comments, trailing commas), so this edits text instead of parsing.
+func setVSCodeJavaHome(_ path: String?, _ url: URL) throws {
+    guard fm.fileExists(atPath: url.deletingLastPathComponent().path) else { return }
+    let esc = path.map { $0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
+    try editLines(url, #"^[ \t]*"java\.import\.gradle\.java\.home"[ \t]*:[ \t]*"(?:[^"\\\n]|\\.)*"[ \t]*,?[ \t]*\n?"#,
+                  esc.map { "  \"java.import.gradle.java.home\": \"\($0)\"," }) { s, l in
+        guard let brace = s.firstIndex(of: "{") else { return "{\n\(l)\n}\n" }
+        return String(s[...brace]) + "\n" + l + String(s[s.index(after: brace)...])
+    }
+}
+
+/// JAVA_HOME for apps launched from now on (Android Studio's "JAVA_HOME" Gradle JDK, VS Code). Lost on reboot,
+/// so the menu bar app re-applies it at launch.
+func setLaunchdJavaHome(_ path: String?) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    p.arguments = path.map { ["setenv", "JAVA_HOME", $0] } ?? ["unsetenv", "JAVA_HOME"]
+    try? p.run()
+    p.waitUntilExit()
+}
+
+// MARK: - Android Studio. Gradle JDK "#GRADLE_LOCAL_JAVA_HOME" reads java.home from <gradle root>/.gradle/config.properties
+// (gitignored) at every sync, so switching needs no restart.
+
+func firstGroups(_ pattern: String, _ s: String) -> [String] {
+    let re = try! NSRegularExpression(pattern: pattern)
+    return re.matches(in: s, range: NSRange(s.startIndex..., in: s)).compactMap { Range($0.range(at: 1), in: s).map { String(s[$0]) } }
+}
+
+/// .idea/gradle.xml of every project in Android Studio's recent list (all installed versions).
+func androidStudioGradleXMLs(_ base: String = homeDir + "/Library/Application Support/Google") -> [String] {
+    let projects = children(base).filter { ($0 as NSString).lastPathComponent.hasPrefix("AndroidStudio") }
+        .compactMap { try? String(contentsOfFile: $0 + "/options/recentProjects.xml", encoding: .utf8) }
+        .flatMap { firstGroups(#"<entry key="([^"]+)""#, $0) }
+        .map { $0.replacingOccurrences(of: "$USER_HOME$", with: homeDir) + "/.idea/gradle.xml" }
+    return Array(Set(projects)).sorted().filter { fm.fileExists(atPath: $0) }
+}
+
+/// Points the project's Gradle JDK at #GRADLE_LOCAL_JAVA_HOME (once) and writes `path` as each Gradle root's java.home.
+func setAndroidStudioJavaHome(_ path: String?, gradleXML: String) throws {
+    let projectDir = ((gradleXML as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+    let old = try String(contentsOfFile: gradleXML, encoding: .utf8)
+    var xml = old.replacingOccurrences(of: #"(<option name="gradleJvm" value=")[^"]*""#,
+                                       with: "$1#GRADLE_LOCAL_JAVA_HOME\"", options: .regularExpression)
+    // ponytail: only checks the whole file; a multi-root file where just some roots omit gradleJvm keeps those as is.
+    if !xml.contains(#"name="gradleJvm""#) {  // option omitted: add it next to each Gradle root
+        xml = xml.replacingOccurrences(of: #"([ \t]*)(<option name="externalProjectPath" value="[^"]*" />)"#,
+                                       with: "$1$2\n$1<option name=\"gradleJvm\" value=\"#GRADLE_LOCAL_JAVA_HOME\" />",
+                                       options: .regularExpression)
+    }
+    if xml != old { try xml.write(toFile: gradleXML, atomically: true, encoding: .utf8) }
+    for root in firstGroups(#"<option name="externalProjectPath" value="([^"]*)""#, xml) {
+        let dir = root.replacingOccurrences(of: "$PROJECT_DIR$", with: projectDir)
+        try setProperty("java.home", path, URL(fileURLWithPath: dir + "/.gradle/config.properties"))
+    }
+}
+
+/// Points Flutter, Gradle, Android Studio, GUI apps and VS Code at one JDK. nil = back to each tool's default.
+func applyJDK(_ path: String?) throws {
+    try setJDKDir(path)
+    try setGradleJavaHome(path)
+    // Android Studio has no "unset": default means its own bundled JDK.
+    let studio = path ?? detectJDKs().first { $0.source == "Android Studio" }?.home
+    for xml in androidStudioGradleXMLs() { try setAndroidStudioJavaHome(studio, gradleXML: xml) }
+    for url in vscodeSettings { try setVSCodeJavaHome(path, url) }
+    setLaunchdJavaHome(path)
+}

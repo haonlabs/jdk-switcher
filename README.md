@@ -5,8 +5,8 @@
 <h1 align="center">JDK Switcher</h1>
 
 <p align="center">
-  Switch the JDK Flutter uses from the menu bar, on your Mac only.<br>
-  Nothing is written to your project, so teammates' builds never break.
+  Switch the JDK for Flutter, Gradle, Android Studio and VS Code from the menu bar, on your Mac only.<br>
+  Only local, per-user settings change, so teammates' builds never break.
 </p>
 
 <p align="center">
@@ -32,19 +32,22 @@ Flutter version on it, including ones installed with FVM.
 
 ## Features
 
-- Lives in the menu bar. The badge shows the active major version: `J17`, `J21`, `J25`, …
+- Lives in the menu bar as a small cup icon. Click it to see the active JDK.
+- One pick switches Flutter (`jdk-dir`), `./gradlew` (`~/.gradle/gradle.properties`), Android Studio's Gradle JDK
+  (no restart), VS Code's Java extension (`java.import.gradle.java.home`) and `JAVA_HOME` for other apps.
 - Finds JDKs from Android Studio, Homebrew, `/Library/Java/JavaVirtualMachines`, SDKMAN, mise and asdf.
 - **Default (Android Studio)** removes the override, so Flutter goes back to its own choice.
 - **Launch at Login**, using the native macOS login item API.
 - A small CLI for scripts: `--list` and `--set`.
-- Never touches project files. It only changes the one `jdk-dir` key and keeps every other Flutter setting.
+- Never touches tracked source. In projects it only writes gitignored `.gradle/config.properties` (plus a one-time
+  Gradle JDK change in `.idea/gradle.xml`).
 - Universal binary (Apple Silicon and Intel), macOS 13 Ventura or later.
 
 ## Install
 
 1. Download `JDKSwitcher-<version>.dmg` from [Releases](https://github.com/haonlabs/jdk-switcher/releases/latest).
 2. Open it and drag **JDK Switcher** into **Applications**.
-3. Launch it from Applications. The badge appears in the menu bar.
+3. Launch it from Applications. The cup icon appears in the menu bar.
 
 ### "JDK Switcher can't be opened" / "Apple could not verify…"
 
@@ -61,12 +64,12 @@ Prefer not to trust a binary? [Build it yourself](#build-from-source). It takes 
 
 ## Usage
 
-Click the menu bar badge:
+Click the cup icon in the menu bar. The first line shows the active JDK.
 
 | Item | What it does |
 |---|---|
-| **Default (Android Studio)** | Remove the override. Flutter uses Android Studio's bundled JDK. |
-| **JDK 17.0.21 — Homebrew**, … | Make Flutter use this JDK. The checkmark shows the active one. |
+| **Default (Android Studio)** | Remove every override. Each tool goes back to its own default. |
+| **JDK 17.0.21 — Homebrew**, … | Use this JDK everywhere. The checkmark shows the active one. |
 | **Refresh** ⌘R | Rescan after installing or removing a JDK |
 | **Launch at Login** | Start JDK Switcher when you log in |
 | **Quit JDK Switcher** ⌘Q | Quit. The selected JDK stays active. |
@@ -93,16 +96,33 @@ Flutter picks the JDK for Android builds in this order:
 3. `JAVA_HOME`
 4. `java` on your `PATH`
 
-JDK Switcher only reads and writes the first one, the same key `flutter config --jdk-dir` sets. If the file
-isn't valid JSON, it refuses to write instead of overwriting your other settings.
+Picking a JDK writes it to every place that chooses one:
+
+| Where | Used by | Takes effect |
+|---|---|---|
+| `jdk-dir` in `~/.config/flutter/settings` | `flutter` CLI, VS Code and Android Studio Flutter builds | immediately |
+| `org.gradle.java.home` in `~/.gradle/gradle.properties` | every `./gradlew` run (native Android, Flutter's Gradle) | immediately |
+| `java.home` in `<gradle root>/.gradle/config.properties` of every project in Android Studio's recent list | Android Studio, with Gradle JDK set to `#GRADLE_LOCAL_JAVA_HOME` | next Gradle sync |
+| `JAVA_HOME` via `launchctl setenv` | apps opened afterwards: VS Code, Terminal | after restarting the app |
+| `java.import.gradle.java.home` in VS Code / Cursor / VSCodium / Windsurf `settings.json` | VS Code's Java and Gradle extensions (Kotlin/Java in `android/`) | immediately |
+
+For Android Studio, `.gradle/` is gitignored by default. The first time a project is switched, its
+`.idea/gradle.xml` Gradle JDK changes to `#GRADLE_LOCAL_JAVA_HOME`, the portable value Android Studio itself
+uses for new projects. If that file is committed, you'll see that one-line diff once. **Default (Android Studio)**
+writes Android Studio's bundled JDK there.
+
+Each edit only touches its own key and keeps your comments and other settings. If the Flutter settings file
+isn't valid JSON, it refuses to write instead of overwriting it. `launchctl` values are lost on reboot, so the
+app re-applies the current JDK each time it starts (turn on **Launch at Login**).
 
 The source is a few small files:
 
 ```
 Sources/main.swift          menu bar UI, Launch at Login, CLI
-Sources/JDKStore.swift      JDK discovery, Flutter settings read/write
+Sources/JDKStore.swift      JDK discovery, Flutter/Gradle/VS Code settings, JAVA_HOME
 Tests/main.swift            self-check for discovery and the settings file
-scripts/make-icon.swift     draws the app icon
+Sources/Logo.swift          the logo, for the menu bar and the app icon
+scripts/make-icon/main.swift  draws the app icon
 build.sh                    builds the .app and .dmg
 ```
 
@@ -135,9 +155,11 @@ SIGN_ID="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=jdk-switch
 
 ## Troubleshooting
 
-**Android Studio still builds with another JDK.** Builds started from Android Studio use its own setting:
-Settings → Build, Execution, Deployment → Build Tools → Gradle → **Gradle JDK**. JDK Switcher covers the
-`flutter` CLI and editors that call it, such as VS Code.
+**Android Studio still builds with another JDK / shows red errors.** Click **Sync Project with Gradle Files**.
+Only projects in Android Studio's recent list are switched; for a project opened for the first time, open it once,
+then click **Refresh** and pick the JDK again.
+
+**VS Code still shows red in `android/`.** Run *Java: Clean Java Language Server Workspace* once after switching.
 
 **My JDK isn't listed.** Click **Refresh**. If it's installed somewhere else, use
 `--set /path/to/Home`. The menu shows it as *Custom*.
@@ -148,7 +170,7 @@ System Settings → General → Login Items.
 ## Known limitations
 
 - The choice is global for your user, not per project. Switch when you move to a project that needs another JDK.
-- Only Flutter reads `jdk-dir`. Plain Gradle or Android Studio builds aren't affected.
+- A shell that exports its own `JAVA_HOME` (e.g. in `~/.zshrc`) overrides the one set by `launchctl`.
 
 ## Contributing
 

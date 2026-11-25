@@ -7,7 +7,10 @@ final class Model: ObservableObject {
     @Published var current: String?
     @Published var launchAtLogin = false
 
-    init() { reload() }
+    init() {
+        reload()
+        setLaunchdJavaHome(current)  // launchctl env is lost on reboot
+    }
 
     func reload() {
         jdks = detectJDKs()
@@ -15,14 +18,14 @@ final class Model: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    /// Menu bar text: "J" + the major version Flutter will use.
-    var label: String {
-        let active = current.map { c in jdks.first { $0.home == c } } ?? jdks.first { $0.source == "Android Studio" }
-        return "J" + (active?.major ?? "?")
+    /// Header line in the menu, e.g. "Active: JDK 17.0.21 — Homebrew".
+    var activeLabel: String {
+        guard let c = current else { return "Active: Default (Android Studio)" }
+        return jdks.first { $0.home == c }.map { "Active: JDK \($0.version) — \($0.source)" } ?? "Active: \(c)"
     }
 
     func pick(_ path: String?) {
-        do { try setJDKDir(path) } catch { show(error) }
+        do { try applyJDK(path) } catch { show(error) }
         reload()
     }
 
@@ -46,7 +49,8 @@ struct JDKSwitcherApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            Text("JDK used by Flutter")
+            Text(model.activeLabel)
+            Divider()
             Toggle("Default (Android Studio)", isOn: binding(nil))
             ForEach(model.jdks, id: \.self) { jdk in
                 Toggle("JDK \(jdk.version) — \(jdk.source)", isOn: binding(jdk.home))
@@ -64,7 +68,7 @@ struct JDKSwitcherApp: App {
             Divider()
             Button("Quit JDK Switcher") { NSApp.terminate(nil) }.keyboardShortcut("q")
         } label: {
-            Image(nsImage: menuBadge(model.label))
+            Image(nsImage: menuIcon).accessibilityLabel(model.activeLabel)
         }
     }
 
@@ -73,20 +77,13 @@ struct JDKSwitcherApp: App {
     }
 }
 
-/// Filled rounded badge with the text knocked out. Template image, so it follows the menu bar's light/dark look.
-func menuBadge(_ text: String) -> NSImage {
-    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .heavy)]
-    let ts = (text as NSString).size(withAttributes: attrs)
-    let img = NSImage(size: NSSize(width: ceil(ts.width) + 10, height: 16), flipped: false) { r in
-        NSColor.black.setFill()
-        NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
-        NSGraphicsContext.current?.compositingOperation = .destinationOut
-        (text as NSString).draw(at: NSPoint(x: (r.width - ts.width) / 2, y: (r.height - ts.height) / 2), withAttributes: attrs)
-        return true
-    }
+/// Menu bar logo, drawn by Sources/Logo.swift.
+/// Template image, so it follows the menu bar's light/dark look.
+let menuIcon: NSImage = {
+    let img = NSImage(size: NSSize(width: 23, height: 16), flipped: false) { _ in drawLogo(); return true }
     img.isTemplate = true
     return img
-}
+}()
 
 let usage = """
 usage: JDKSwitcher                 start the menu bar app
@@ -105,7 +102,7 @@ case "--set" where args.count == 2:
         : want.hasPrefix("/") ? want
         : detectJDKs().first { $0.major == want }?.home
     if want != "default" && (path == nil || javaVersion(path!) == nil) { print("no JDK \(want) found"); exit(1) }
-    do { try setJDKDir(path) } catch { print(error.localizedDescription); exit(1) }
+    do { try applyJDK(path) } catch { print(error.localizedDescription); exit(1) }
     print("jdk-dir = \(path ?? "default")")
 case "--help", "-h":
     print(usage)

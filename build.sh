@@ -20,7 +20,7 @@ done
 lipo -create build/JDKSwitcher-arm64 build/JDKSwitcher-x86_64 -output "$APP/Contents/MacOS/JDKSwitcher"
 cp Info.plist "$APP/Contents/"
 
-swift scripts/make-icon.swift build/AppIcon.iconset
+swiftc Sources/Logo.swift scripts/make-icon/main.swift -o build/make-icon && build/make-icon build/AppIcon.iconset
 iconutil -c icns build/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --options runtime --timestamp=none --sign "${SIGN_ID:--}" "$APP"
@@ -29,7 +29,7 @@ codesign --verify --strict "$APP"
 cp -R "$APP" build/dmg/
 ln -s /Applications build/dmg/Applications
 hdiutil create -volname "JDK Switcher" -srcfolder build/dmg -ov -format UDZO "$DMG" >/dev/null
-rm -rf build/dmg build/AppIcon.iconset build/JDKSwitcher-arm64 build/JDKSwitcher-x86_64
+rm -rf build/dmg build/AppIcon.iconset build/make-icon build/JDKSwitcher-arm64 build/JDKSwitcher-x86_64
 
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   codesign --sign "$SIGN_ID" "$DMG"
