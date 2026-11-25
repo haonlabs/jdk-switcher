@@ -49,6 +49,10 @@ Flutter version on it, including ones installed with FVM.
 2. Open it and drag **JDK Switcher** into **Applications**.
 3. Launch it from Applications. The cup icon appears in the menu bar.
 
+Switching writes to your Android Studio projects, so if they're in `~/Documents`, `~/Desktop` or
+`~/Downloads`, macOS asks once to let JDK Switcher access that folder. Release builds from 1.1.0 on are signed
+with a stable (self-signed) JDK Switcher certificate, so the permission carries over to future updates.
+
 ### "JDK Switcher can't be opened" / "Apple could not verify…"
 
 Release builds aren't notarized by Apple yet, so Gatekeeper blocks the first launch. Allow it once, either:
@@ -142,6 +146,10 @@ This runs the self-check, compiles a universal binary, draws the icon, signs the
 - `build/JDKSwitcher-<version>.dmg`
 
 The version comes from `CFBundleShortVersionString` in `Info.plist`.
+
+Your own builds are signed ad hoc, so macOS asks for folder access again after each rebuild. Release builds use
+the maintainer's self-signed certificate, which `build.sh` picks up automatically when `JDK Switcher (haonlabs)`
+is in the keychain.
 
 ### Signed and notarized builds
 
